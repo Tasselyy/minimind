@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数（建议1轮zero或2-6轮充分训练）")
-    parser.add_argument("--batch_size", type=int, default=512, help="每卡 batch size；A800 默认 512 目标约 80% 占用，OOM 可改为 256")
+    parser.add_argument("--batch_size", type=int, default=256, help="每卡 batch size；A800 默认 512 目标约 80% 占用，OOM 可改为 256")
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="初始学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
