@@ -4,7 +4,12 @@ import sys
 # 设置包名为 trainer，为了相对导入
 __package__ = "trainer"
 # 将上一级目录添加到 sys.path 中，以便能够导入 model, dataset, trainer 等模块
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(_project_root)
+
+# 优先从项目根目录的 .env 加载环境变量（如 WANDB_API_KEY / SWANLAB_API_KEY）
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_project_root, '.env'))
 
 import argparse
 import time
@@ -255,15 +260,24 @@ if __name__ == "__main__":
     # 初始化自动混合精度上下文 (AMP, Automatic Mixed Precision)
     autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
     
-    # ========== 4. 配置wandb可视化 ==========
+    # ========== 4. 配置 wandb / SwanLab 可视化 ==========
+    # WANDB_API_KEY → Weights & Biases；SWANLAB_API_KEY → SwanLab（API key 格式不同，不可混用）
     wandb = None
     if args.use_wandb and is_main_process():
-        # 这里使用了 swanlab 作为 wandb 的替代，提供类似的日志记录功能
-        import swanlab as wandb
+        swanlab_key = os.environ.get("SWANLAB_API_KEY")
+        wandb_key = os.environ.get("WANDB_API_KEY")
+        if wandb_key:
+            import wandb
+            wandb.login(key=wandb_key)
+        elif swanlab_key:
+            import swanlab as wandb
+            wandb.login(api_key=swanlab_key)
+        else:
+            import wandb
+            wandb.login()
         wandb_id = ckp_data.get('wandb_id') if ckp_data else None
         resume = 'must' if wandb_id else None
         wandb_run_name = f"MiniMind-DPO-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LR-{args.learning_rate}"
-        # 初始化实验记录
         wandb.init(project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume)
     
     # ========== 5. 定义模型和参考模型 ==========

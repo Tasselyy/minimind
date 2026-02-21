@@ -118,14 +118,22 @@ if __name__ == "__main__":
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
     
-    # ========== 4. 配wandb ==========
+    # ========== 4. 配 wandb / SwanLab ==========
+    # WANDB_API_KEY → 使用 Weights & Biases；SWANLAB_API_KEY → 使用 SwanLab（API key 格式不同，不可混用）
     wandb = None
     if args.use_wandb and not args.no_wandb and is_main_process():
-        import swanlab as wandb
-        # 优先从环境变量读取 API Key：SWANLAB_API_KEY 或 WANDB_API_KEY
-        api_key = os.environ.get("SWANLAB_API_KEY") or os.environ.get("WANDB_API_KEY")
-        if api_key:
-            wandb.login(api_key=api_key)
+        swanlab_key = os.environ.get("SWANLAB_API_KEY")
+        wandb_key = os.environ.get("WANDB_API_KEY")
+        if wandb_key:
+            import wandb
+            wandb.login(key=wandb_key)
+        elif swanlab_key:
+            import swanlab as wandb
+            wandb.login(api_key=swanlab_key)
+        else:
+            import wandb
+            # 未设置 key 时使用本地已登录或交互登录
+            wandb.login()
         wandb_id = ckp_data.get('wandb_id') if ckp_data else None
         resume = 'must' if wandb_id else None
         wandb_run_name = f"MiniMind-Pretrain-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"

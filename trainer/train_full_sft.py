@@ -2,7 +2,10 @@ import os
 import sys
 
 __package__ = "trainer"
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(_project_root)
+from dotenv import load_dotenv
+load_dotenv(os.path.join(_project_root, '.env'))
 
 import argparse
 import time
@@ -112,10 +115,20 @@ if __name__ == "__main__":
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
     
-    # ========== 4. 配wandb ==========
+    # ========== 4. 配 wandb / SwanLab ==========
     wandb = None
     if args.use_wandb and is_main_process():
-        import swanlab as wandb
+        swanlab_key = os.environ.get("SWANLAB_API_KEY")
+        wandb_key = os.environ.get("WANDB_API_KEY")
+        if wandb_key:
+            import wandb
+            wandb.login(key=wandb_key)
+        elif swanlab_key:
+            import swanlab as wandb
+            wandb.login(api_key=swanlab_key)
+        else:
+            import wandb
+            wandb.login()
         wandb_id = ckp_data.get('wandb_id') if ckp_data else None
         resume = 'must' if wandb_id else None
         wandb_run_name = f"MiniMind-Full-SFT-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
