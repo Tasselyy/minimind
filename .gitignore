@@ -2,3 +2,7 @@ model/__pycache__
 out
 website/
 docs-minimind/
+
+# 数据集体积大，不要进 Git；用云盘/对象存储单独传
+dataset/*
+!dataset/*.md
