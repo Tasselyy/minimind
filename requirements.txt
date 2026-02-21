@@ -27,5 +27,6 @@ wandb==0.18.3
 streamlit==1.50.0
 einops==0.8.1
 swanlab==0.6.8
+python-dotenv==1.0.1
 torch==2.6.0
 torchvision==0.21.0
