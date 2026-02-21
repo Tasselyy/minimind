@@ -100,7 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true", default=True, help="使用 wandb 记录训练（默认开启）")
     parser.add_argument("--no_wandb", action="store_true", help="禁用 wandb")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain", help="wandb项目名")
-    parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用 torch.compile 加速（默认 1，有助于提高 GPU 占用）")
+    parser.add_argument("--use_compile", default=0, type=int, choices=[0, 1], help="是否使用 torch.compile 加速（默认 0，避免 CausalLMOutputWithPast.aux_loss 兼容问题）")
     args = parser.parse_args()
 
     # ========== 1. 初始化环境和随机种子 ==========
