@@ -81,7 +81,7 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=1, help="训练轮数（建议1轮zero或2-6轮充分训练）")
-    parser.add_argument("--batch_size", type=int, default=256, help="每卡 batch size；GPU 占用低时可提高到 512 或 1024 直到显存约 80%")
+    parser.add_argument("--batch_size", type=int, default=512, help="每卡 batch size；A800 默认 512 目标约 80% 占用，OOM 可改为 256")
     parser.add_argument("--learning_rate", type=float, default=5e-4, help="初始学习率")
     parser.add_argument("--device", type=str, default="cuda:0" if torch.cuda.is_available() else "cpu", help="训练设备")
     parser.add_argument("--dtype", type=str, default="bfloat16", help="混合精度类型")
@@ -100,7 +100,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true", default=True, help="使用 wandb 记录训练（默认开启）")
     parser.add_argument("--no_wandb", action="store_true", help="禁用 wandb")
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain", help="wandb项目名")
-    parser.add_argument("--use_compile", default=0, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
+    parser.add_argument("--use_compile", default=1, type=int, choices=[0, 1], help="是否使用 torch.compile 加速（默认 1，有助于提高 GPU 占用）")
     args = parser.parse_args()
 
     # ========== 1. 初始化环境和随机种子 ==========
