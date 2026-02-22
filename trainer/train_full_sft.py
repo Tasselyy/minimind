@@ -1,9 +1,15 @@
+# =============================================================================
+# MiniMind Full SFT 全参数监督微调脚本
+# 功能：在预训练权重（或空）基础上，对所有参数做监督微调，得到对话/指令遵循模型
+# =============================================================================
+
 import os
 import sys
 
 __package__ = "trainer"
 _project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(_project_root)
+
 from dotenv import load_dotenv
 load_dotenv(os.path.join(_project_root, '.env'))
 
@@ -16,6 +22,8 @@ from contextlib import nullcontext
 from torch import optim, nn
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
+
+# 模型配置、SFT 数据集、训练工具（学习率、日志、checkpoint、DDP、采样器等）
 from model.model_minimind import MiniMindConfig
 from dataset.lm_dataset import SFTDataset
 from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
@@ -24,14 +32,25 @@ warnings.filterwarnings('ignore')
 
 
 def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
+    """
+    单轮训练循环（全参数更新，无 LoRA）。
+    epoch: 当前轮次（0-based）
+    loader: DataLoader
+    iters: 本轮总迭代数
+    start_step: 续训时本轮要跳过的 step 数
+    wandb: wandb / swanlab 实例
+    """
     start_time = time.time()
     for step, (input_ids, labels) in enumerate(loader, start=start_step + 1):
         input_ids = input_ids.to(args.device)
         labels = labels.to(args.device)
+
+        # 余弦退火学习率
         lr = get_lr(epoch * iters + step, args.epochs * iters, args.learning_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
+        # 混合精度前向
         with autocast_ctx:
             res = model(input_ids, labels=labels)
             loss = res.loss + res.aux_loss
@@ -39,8 +58,10 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
 
         scaler.scale(loss).backward()
 
+        # 每 accumulation_steps 步更新一次
         if (step + 1) % args.accumulation_steps == 0:
             scaler.unscale_(optimizer)
+            # 全参数训练：对所有 model.parameters() 做梯度裁剪
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             scaler.step(optimizer)
@@ -48,6 +69,7 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
 
             optimizer.zero_grad(set_to_none=True)
 
+        # 日志
         if step % args.log_interval == 0 or step == iters - 1:
             spend_time = time.time() - start_time
             current_loss = loss.item() * args.accumulation_steps
@@ -56,17 +78,22 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
             current_lr = optimizer.param_groups[-1]['lr']
             eta_min = spend_time / (step + 1) * iters // 60 - spend_time // 60
             Logger(f'Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters}), loss: {current_loss:.4f}, logits_loss: {current_logits_loss:.4f}, aux_loss: {current_aux_loss:.4f}, lr: {current_lr:.8f}, epoch_time: {eta_min:.1f}min')
-            if wandb: wandb.log({"loss": current_loss, "logits_loss": current_logits_loss, "aux_loss": current_aux_loss, "learning_rate": current_lr, "epoch_time": eta_min})
+            if wandb:
+                wandb.log({"loss": current_loss, "logits_loss": current_logits_loss, "aux_loss": current_aux_loss, "learning_rate": current_lr, "epoch_time": eta_min})
 
+        # 保存完整模型权重 + resume 信息（仅主进程）
         if (step % args.save_interval == 0 or step == iters - 1) and is_main_process():
             model.eval()
+            # 文件名带 hidden_size 和是否 MoE，便于区分不同配置
             moe_suffix = '_moe' if lm_config.use_moe else ''
             ckp = f'{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
+            # 若被 DDP 包装或 torch.compile 包装，需取内部模型
             raw_model = model.module if isinstance(model, DistributedDataParallel) else model
             raw_model = getattr(raw_model, '_orig_mod', raw_model)
             state_dict = raw_model.state_dict()
+            # 保存为 fp16 到 CPU，节省磁盘和加载时间
             torch.save({k: v.half().cpu() for k, v in state_dict.items()}, ckp)
-            lm_checkpoint(lm_config, weight=args.save_weight, model=model, optimizer=optimizer, 
+            lm_checkpoint(lm_config, weight=args.save_weight, model=model, optimizer=optimizer,
                          epoch=epoch, step=step, wandb=wandb, save_dir='../checkpoints', scaler=scaler)
             model.train()
             del state_dict
@@ -75,9 +102,10 @@ def train_epoch(epoch, loader, iters, start_step=0, wandb=None):
 
 
 if __name__ == "__main__":
+    # ---------- 命令行参数 ----------
     parser = argparse.ArgumentParser(description="MiniMind Full SFT")
     parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
-    parser.add_argument('--save_weight', default='full_sft', type=str, help="保存权重的前缀名")
+    parser.add_argument('--save_weight', default='full_sft', type=str, help="保存权重的前缀名（如 full_sft）")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=16, help="batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-6, help="初始学习率")
@@ -101,21 +129,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # ========== 1. 初始化环境和随机种子 ==========
-    local_rank = init_distributed_mode()
-    if dist.is_initialized(): args.device = f"cuda:{local_rank}"
+    local_rank = init_distributed_mode()  # 非 torchrun 时返回 0
+    if dist.is_initialized():
+        args.device = f"cuda:{local_rank}"
     setup_seed(42 + (dist.get_rank() if dist.is_initialized() else 0))
-    
-    # ========== 2. 配置目录、模型参数、检查ckp ==========
+
+    # ========== 2. 配置目录、模型参数、检查 ckp ==========
     os.makedirs(args.save_dir, exist_ok=True)
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
-    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
-    
+    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume == 1 else None  # 仅加载、不保存
+
     # ========== 3. 设置混合精度 ==========
     device_type = "cuda" if "cuda" in args.device else "cpu"
     dtype = torch.bfloat16 if args.dtype == "bfloat16" else torch.float16
     autocast_ctx = nullcontext() if device_type == "cpu" else torch.cuda.amp.autocast(dtype=dtype)
-    
-    # ========== 4. 配 wandb / SwanLab ==========
+
+    # ========== 4. 配置 wandb / SwanLab（仅主进程） ==========
     wandb = None
     if args.use_wandb and is_main_process():
         swanlab_key = os.environ.get("SWANLAB_API_KEY")
@@ -133,8 +162,9 @@ if __name__ == "__main__":
         resume = 'must' if wandb_id else None
         wandb_run_name = f"MiniMind-Full-SFT-Epoch-{args.epochs}-BatchSize-{args.batch_size}-LearningRate-{args.learning_rate}"
         wandb.init(project=args.wandb_project, name=wandb_run_name, id=wandb_id, resume=resume)
-    
+
     # ========== 5. 定义模型、数据、优化器 ==========
+    # 加载基座（from_weight 一般为 pretrain），无 LoRA，全参数
     model, tokenizer = init_model(lm_config, args.from_weight, device=args.device)
     if args.use_compile == 1:
         model = torch.compile(model)
@@ -142,9 +172,9 @@ if __name__ == "__main__":
     train_ds = SFTDataset(args.data_path, tokenizer, max_length=args.max_seq_len)
     train_sampler = DistributedSampler(train_ds) if dist.is_initialized() else None
     scaler = torch.cuda.amp.GradScaler(enabled=(args.dtype == 'float16'))
-    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-    
-    # ========== 6. 从ckp恢复状态 ==========
+    optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)  # 全参数优化
+
+    # ========== 6. 从 ckp 恢复状态 ==========
     start_epoch, start_step = 0, 0
     if ckp_data:
         model.load_state_dict(ckp_data['model'])
@@ -152,24 +182,26 @@ if __name__ == "__main__":
         scaler.load_state_dict(ckp_data['scaler'])
         start_epoch = ckp_data['epoch']
         start_step = ckp_data.get('step', 0)
-    
-    # ========== 7. DDP包模型 ==========
+
+    # ========== 7. DDP 包装模型 ==========
     if dist.is_initialized():
         model._ddp_params_and_buffers_to_ignore = {"freqs_cos", "freqs_sin"}
         model = DistributedDataParallel(model, device_ids=[local_rank])
-    
-    # ========== 8. 开始训练 ==========
+
+    # ========== 8. 按 epoch 循环，每轮打乱数据并调用 train_epoch ==========
     for epoch in range(start_epoch, args.epochs):
         train_sampler and train_sampler.set_epoch(epoch)
-        setup_seed(42 + epoch); indices = torch.randperm(len(train_ds)).tolist()
+        setup_seed(42 + epoch)
+        indices = torch.randperm(len(train_ds)).tolist()
         skip = start_step if (epoch == start_epoch and start_step > 0) else 0
         batch_sampler = SkipBatchSampler(train_sampler or indices, args.batch_size, skip)
         loader = DataLoader(train_ds, batch_sampler=batch_sampler, num_workers=args.num_workers, pin_memory=True)
-        if skip > 0: 
+        if skip > 0:
             Logger(f'Epoch [{epoch + 1}/{args.epochs}]: 跳过前{start_step}个step，从step {start_step + 1}开始')
             train_epoch(epoch, loader, len(loader) + skip, start_step, wandb)
         else:
             train_epoch(epoch, loader, len(loader), 0, wandb)
-    
-    # ========== 9. 清理分布进程 ==========
-    if dist.is_initialized(): dist.destroy_process_group()
+
+    # ========== 9. 清理分布式进程 ==========
+    if dist.is_initialized():
+        dist.destroy_process_group()
